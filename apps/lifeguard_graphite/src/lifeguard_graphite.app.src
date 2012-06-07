@@ -1,0 +1,16 @@
+{application, lifeguard_graphite,
+ [
+  {description, ""},
+  {vsn, "1"},
+  {registered, [
+        lifeguard_graphite_app,
+        lifeguard_graphite_sup
+    ]},
+  {applications, [
+                  kernel,
+                  stdlib,
+                  lager
+                 ]},
+  {mod, { lifeguard_graphite_app, []}},
+  {env, []}
+ ]}.
