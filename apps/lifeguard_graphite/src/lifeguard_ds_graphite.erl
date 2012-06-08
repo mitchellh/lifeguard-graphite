@@ -6,6 +6,15 @@
 -export([start_link/3]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 
+-record(args, {
+        target, % The target graph
+        from    % From what time
+    }).
+
+-record(state, {
+        host % Host of the graphite server
+    }).
+
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
 -endif.
@@ -14,18 +23,43 @@
 %% by Lifeguard and is the atom that we should register ourselves locally
 %% under. The Name and Args are what are configured in the application
 %% configuration.
-start_link(ServerRef, _Name, _Args) ->
-    gen_server:start_link({local, ServerRef}, ?MODULE, [], []).
+start_link(ServerRef, _Name, Args) ->
+    gen_server:start_link({local, ServerRef}, ?MODULE, Args, []).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% gen_server callbacks
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-init(_Args) ->
-    lager:info("Started the graphite data source..."),
-    {ok, no_state}.
+init(Args) ->
+    case is_proplist(Args) of
+        false ->
+            % The arguments should be a proplist so we show an error and
+            % crash out.
+            lager:error("Arguments must be a proplist."),
+            {stop, invalid_args};
+        true ->
+            case proplists:lookup(host, Args) of
+                {host, Host} ->
+                    lager:info("Started the graphite data source..."),
+                    {ok, #state{host=Host}};
+                none ->
+                    lager:error("Host must be given."),
+                    {stop, invalid_args}
+            end
+    end.
 
-handle_call(_Request, _From, State) -> {noreply, State}.
+handle_call({get, [Object]}, _From, State) ->
+    % Validate our arguments
+    Result = case extract_args(Object) of
+        {error, Reasons} ->
+            % Something bad happened so that's just our result
+            {error, Reasons};
+        {ok, _Args} ->
+            % The object is valid so let's go forth and get the graphite data
+            {ok, [1, 2, 3, 4]}
+    end,
+
+    {reply, Result, State}.
 
 handle_cast(_Request, State) -> {noreply, State}.
 
@@ -39,6 +73,60 @@ code_change(_OldVsn, State, _Extra) -> {ok, State}.
 % Internal methods
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
+%% @doc Extracts the arguments from a proplist into a proper record so
+%% that it is easier to use around the library.
+extract_args(Object) ->
+    case is_proplist(Object) of
+        false ->
+            {error, <<"Argument must be an object.">>};
+        true ->
+            extract_args_get_target(Object, #args{})
+    end.
+
+extract_args_get_target(Object, Result) ->
+    case proplists:lookup(<<"target">>, Object) of
+        {<<"target">>, Value} ->
+            extract_args_get_from(Object, Result#args{target=Value});
+        none ->
+            {error, <<"A target must be given.">>}
+    end.
+
+extract_args_get_from(Object, Result) ->
+    case proplists:lookup(<<"from">>, Object) of
+        {<<"from">>, Value} ->
+            {ok, Result#args{from=Value}};
+        none ->
+            {error, <<"A from value must be given.">>}
+    end.
+
+%% @doc Returns a boolean of whether a given list is a valid proplist
+%% or not.
+is_proplist([]) ->
+    true;
+is_proplist([{_Key, _Value} | Rest]) ->
+    is_proplist(Rest);
+is_proplist(_Other) ->
+    false.
+
 -ifdef(TEST).
+
+extract_args_bad_argument_test() ->
+    {error, _Reasons} = extract_args(5),
+    {error, _Reasons} = extract_args("bad"),
+    {error, _Reasons} = extract_args(<<"nope">>).
+
+extract_args_test() ->
+    {ok, Result} = extract_args([
+                {<<"target">>, <<"foo">>},
+                {<<"from">>, <<"bar">>}]),
+
+    <<"foo">> = Result#args.target,
+    <<"bar">> = Result#args.from.
+
+is_proplist_test() ->
+    false = is_proplist(12),
+    true = is_proplist([]),
+    true = is_proplist([{key, value}]),
+    true = is_proplist([{key, value}, {key2, value2}]).
 
 -endif.
