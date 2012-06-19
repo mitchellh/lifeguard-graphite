@@ -54,9 +54,32 @@ handle_call({get, [Object]}, _From, State) ->
         {error, Reasons} ->
             % Something bad happened so that's just our result
             {error, Reasons};
-        {ok, _Args} ->
+        {ok, Args} ->
             % The object is valid so let's go forth and get the graphite data
-            {ok, [1, 2, 3, 4]}
+            HTTPOptions = [
+                    {autoredirect, true},
+                    {connect_timeout, 5000},
+                    {relaxed, true},
+                    {timeout, 5000}
+            ],
+            ReqOptions = [
+                    {body_format, binary},
+                    {sync, true}
+            ],
+            Url = io_lib:format("http://~s/render/?target=~s&from=~s&format=raw",
+                                [State#state.host,
+                                 Args#args.target,
+                                 Args#args.from]),
+            Url2 = lists:flatten(Url),
+            lager:debug("Requesting: ~s", [Url2]),
+            {ok, HTTPResult} = httpc:request(get, {Url2, []}, HTTPOptions, ReqOptions),
+            {{"HTTP/1.1", 200, _Reason}, _Headers, HTTPBody} = HTTPResult,
+            lager:debug("Graphite response: ~p", [HTTPBody]),
+
+            % Parse the body for the numbers and return that.
+            {ok, DataPoints} = parse_data_points(HTTPBody),
+
+            {ok, DataPoints}
     end,
 
     {reply, Result, State}.
@@ -108,6 +131,20 @@ is_proplist([{_Key, _Value} | Rest]) ->
 is_proplist(_Other) ->
     false.
 
+%% @doc Parses the data points out of the graphite response body, returning
+%% a list of numbers.
+parse_data_points(Body) ->
+    case binary:split(Body, <<"|">>) of
+        [_Before, NumberList] ->
+            Numbers = lists:map(fun(X) ->
+                            {Float, _Rest} = string:to_float(binary_to_list(X)),
+                            Float
+                    end, binary:split(NumberList, <<",">>, [global])),
+            {ok, Numbers};
+        _Other ->
+            {error, bad_format}
+    end.
+
 -ifdef(TEST).
 
 extract_args_bad_argument_test() ->
@@ -128,5 +165,9 @@ is_proplist_test() ->
     true = is_proplist([]),
     true = is_proplist([{key, value}]),
     true = is_proplist([{key, value}, {key2, value2}]).
+
+parse_data_points_test() ->
+    {error, bad_format} = parse_data_points(<<"bad">>),
+    {ok, [1.0,2.0,3.0]} = parse_data_points(<<"count,1340124510,1340128110,10|1.0,2.0,3.0">>).
 
 -endif.

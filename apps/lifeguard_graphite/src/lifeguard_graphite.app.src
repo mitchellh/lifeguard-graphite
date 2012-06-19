@@ -12,6 +12,6 @@
                   inets,
                   lager
                  ]},
-  {mod, { lifeguard_graphite_app, []}},
+  {mod, {lifeguard_graphite_app, []}},
   {env, []}
  ]}.
