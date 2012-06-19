@@ -17,6 +17,9 @@ devrel: rel
 	rm -rf rel/$(APP)/lib/$(APP)-*/priv
 	ln -sf $(abspath ./apps/$(APP)/priv) rel/$(APP)/lib/$(APP)-*
 	echo -s sync | tee -a rel/$(APP)/releases/*/vm.args
+	mkdir -p dev
+	test -f dev/sys.config || cp rel/$(APP)/releases/*/sys.config dev/
+	ln -sf $(abspath ./dev/sys.config) rel/$(APP)/releases/*/sys.config
 
 rel: compile
 	./rebar generate -f

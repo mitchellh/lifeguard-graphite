@@ -1,4 +1,5 @@
 deps/
+dev/
 dist/
 ebin/
 rel/lifeguard_graphite/
