@@ -78,9 +78,15 @@ handle_call({get, [Object]}, _From, State) ->
             lager:debug("Graphite response: ~p", [HTTPBody]),
 
             % Parse the body for the numbers and return that.
-            {ok, DataPoints} = parse_data_points(HTTPBody),
-
-            {ok, DataPoints}
+            case HTTPBody of
+                <<>> ->
+                    % The empty binary means that there was an error
+                    % with the arguments... Unfortunately graphite doesn't
+                    % give us any helpful information here.
+                    {error, bad_args};
+                _ ->
+                    parse_data_points(HTTPBody)
+            end
     end,
 
     {reply, Result, State}.
