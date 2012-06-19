@@ -92,13 +92,19 @@ handle_call({get, [Object]}, From, State) ->
 handle_cast(_Request, State) -> {noreply, State}.
 
 handle_info({http, {RequestId, RawResponse}}, State) ->
+    % Attempt to find the client for this request ID in the dictionary
+    % of waiting clients...
     case dict:find(RequestId, State#state.queue) of
         {ok, Client} ->
+            % Found it, let's respond properly based on the message we
+            % got from the http client.
             Response = case RawResponse of
                 {error, Reason} ->
                     lager:error("HTTP error: ~p", [Reason]),
                     {error, http_error};
                 HTTPResult ->
+                    % We have an HTTP response, so let's pattern match out
+                    % the important bits and then parse out the data
                     {{"HTTP/1.1", 200, _Reason}, _Headers, HTTPBody} = HTTPResult,
                     lager:debug("Graphite response: ~p", [HTTPBody]),
 
