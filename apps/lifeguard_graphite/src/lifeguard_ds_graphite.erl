@@ -50,6 +50,7 @@ init(Args) ->
 
 handle_call({get, [Object]}, _From, State) ->
     % Validate our arguments
+    lager:debug("Get: ~p", [Object]),
     Result = case extract_args(Object) of
         {error, Reasons} ->
             % Something bad happened so that's just our result
@@ -133,15 +134,26 @@ is_proplist(_Other) ->
 
 %% @doc Parses the data points out of the graphite response body, returning
 %% a list of numbers.
-parse_data_points(Body) ->
+parse_data_points(RawBody) ->
+    % The body usually ends in a newline, which we must strip out.
+    Body = case binary:last(RawBody) of
+        $\n -> binary:part(RawBody, 0, byte_size(RawBody) - 1);
+        _   -> RawBody
+    end,
+
+    % Split on the pipe and convert the numbers to floats
     case binary:split(Body, <<"|">>) of
         [_Before, NumberList] ->
             Numbers = lists:map(fun(X) ->
-                            {Float, _Rest} = string:to_float(binary_to_list(X)),
-                            Float
+                            case X of
+                                <<"None">> -> null;
+                                Number ->
+                                    {Float, _Rest} = string:to_float(binary_to_list(Number)),
+                                    Float
+                            end
                     end, binary:split(NumberList, <<",">>, [global])),
             {ok, Numbers};
-        _Other ->
+        _ ->
             {error, bad_format}
     end.
 
@@ -167,7 +179,14 @@ is_proplist_test() ->
     true = is_proplist([{key, value}, {key2, value2}]).
 
 parse_data_points_test() ->
-    {error, bad_format} = parse_data_points(<<"bad">>),
-    {ok, [1.0,2.0,3.0]} = parse_data_points(<<"count,1340124510,1340128110,10|1.0,2.0,3.0">>).
+    {error, bad_format} = parse_data_points(<<"bad\n">>),
+    {ok, [1.0,-2.0,3.0]} = parse_data_points(<<"count,1340124510,1340128110,10|1.0,-2.0,3.0\n">>).
+
+parse_data_points_null_test() ->
+    % Test None in the middle
+    {ok, [1.0,null,2.0]} = parse_data_points(<<"foo|1.0,None,2.0\n">>),
+
+    % Test None at the end
+    {ok, [1.0, 2.0, null]} = parse_data_points(<<"foo|1.0,2.0,None\n">>).
 
 -endif.
