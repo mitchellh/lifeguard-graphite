@@ -12,7 +12,8 @@
     }).
 
 -record(state, {
-        host % Host of the graphite server
+        host, % Host of the graphite server
+        queue % Dict of waiting clients and request IDs
     }).
 
 -ifdef(TEST).
@@ -41,22 +42,26 @@ init(Args) ->
             case proplists:lookup(host, Args) of
                 {host, Host} ->
                     lager:info("Started the graphite data source..."),
-                    {ok, #state{host=Host}};
+                    {ok, #state{
+                            host = Host,
+                            queue = dict:new()
+                        }};
                 none ->
                     lager:error("Host must be given."),
                     {stop, invalid_args}
             end
     end.
 
-handle_call({get, [Object]}, _From, State) ->
+handle_call({get, [Object]}, From, State) ->
     % Validate our arguments
     lager:debug("Get: ~p", [Object]),
-    Result = case extract_args(Object) of
+    case extract_args(Object) of
         {error, Reasons} ->
             % Something bad happened so that's just our result
-            {error, Reasons};
+            {reply, {error, Reasons}, State};
         {ok, Args} ->
-            % The object is valid so let's go forth and get the graphite data
+            % The object is valid so let's go forth and get the graphite data.
+            % The graphite data is requested via async.
             HTTPOptions = [
                     {autoredirect, true},
                     {connect_timeout, 5000},
@@ -65,35 +70,61 @@ handle_call({get, [Object]}, _From, State) ->
             ],
             ReqOptions = [
                     {body_format, binary},
-                    {sync, true}
+                    {receiver, self()},
+                    {sync, false}
             ],
             Url = io_lib:format("http://~s/render/?target=~s&from=~s&format=raw",
                                 [State#state.host,
                                  Args#args.target,
                                  Args#args.from]),
             Url2 = lists:flatten(Url),
+
+            % Make the request asynchronously
             lager:debug("Requesting: ~s", [Url2]),
-            {ok, HTTPResult} = httpc:request(get, {Url2, []}, HTTPOptions, ReqOptions),
-            {{"HTTP/1.1", 200, _Reason}, _Headers, HTTPBody} = HTTPResult,
-            lager:debug("Graphite response: ~p", [HTTPBody]),
+            {ok, RequestId} = httpc:request(get, {Url2, []}, HTTPOptions, ReqOptions),
 
-            % Parse the body for the numbers and return that.
-            case HTTPBody of
-                <<>> ->
-                    % The empty binary means that there was an error
-                    % with the arguments... Unfortunately graphite doesn't
-                    % give us any helpful information here.
-                    {error, bad_args};
-                _ ->
-                    parse_data_points(HTTPBody)
-            end
-    end,
-
-    {reply, Result, State}.
+            % Store the request ID => requester map in the state bag so we can
+            % respond to that client later.
+            NewQueue = dict:store(RequestId, From, State#state.queue),
+            {noreply, State#state{queue=NewQueue}}
+    end.
 
 handle_cast(_Request, State) -> {noreply, State}.
 
-handle_info(_Request, State) -> {noreply, State}.
+handle_info({http, {RequestId, RawResponse}}, State) ->
+    case dict:find(RequestId, State#state.queue) of
+        {ok, Client} ->
+            Response = case RawResponse of
+                {error, Reason} ->
+                    lager:error("HTTP error: ~p", [Reason]),
+                    {error, http_error};
+                HTTPResult ->
+                    {{"HTTP/1.1", 200, _Reason}, _Headers, HTTPBody} = HTTPResult,
+                    lager:debug("Graphite response: ~p", [HTTPBody]),
+
+                    % Parse the body for the numbers and return that.
+                    case HTTPBody of
+                        <<>> ->
+                            % The empty binary means that there was an error
+                            % with the arguments... Unfortunately graphite doesn't
+                            % give us any helpful information here.
+                            {error, bad_args};
+                        _ ->
+                            parse_data_points(HTTPBody)
+                    end
+            end,
+
+            % Send the reply
+            gen_server:reply(Client, Response),
+
+            % Update our clients to remove ourselves
+            NewQueue = dict:erase(RequestId, State#state.queue),
+            {noreply, State#state{queue=NewQueue}};
+        error ->
+            {noreply, State}
+    end;
+handle_info(_Request, State) ->
+    {noreply, State}.
 
 terminate(_Reason, _State) -> ok.
 
